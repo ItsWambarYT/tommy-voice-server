@@ -1,0 +1,10 @@
+{
+  "name": "tommy-voice-server",
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@render/node-builder"
+    }
+  ],
+  "start": "node server.js"
+}
