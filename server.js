@@ -55,14 +55,12 @@ async function generateResponse(transcript, callerNumber) {
     console.log('📞 Caller:', callerNumber || 'unknown');
     console.log('📝 Transcript length:', transcript?.length || 0);
     
-    // If no transcript, use greeting
     if (!transcript || transcript.length === 0) {
         console.log('⚠️ NO TRANSCRIPT - using greeting');
         const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
         return isAndrew ? "Hey bro, what's up?" : "Hello, how can I help you?";
     }
     
-    // Build messages
     const messages = [
         { role: 'system', content: getSystemPrompt(callerNumber) },
         ...convertTranscript(transcript)
@@ -101,6 +99,13 @@ async function generateResponse(transcript, callerNumber) {
         });
         
         clearTimeout(timeoutId);
+        
+        // Check HTTP status first
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('❌ HTTP ERROR:', response.status, response.statusText, errorText);
+            return getFallback(transcript, callerNumber);
+        }
         
         const data = await response.json();
         const elapsed = Date.now() - startTime;
@@ -172,7 +177,6 @@ wss.on('connection', (ws, req) => {
             const data = JSON.parse(message);
             const type = data.interaction_type || data.response_type;
             
-            // Log FULL message for debugging
             console.log(`📩 ${type}:`, JSON.stringify(data, null, 2));
             
             switch (type) {
@@ -195,7 +199,7 @@ wss.on('connection', (ws, req) => {
                     );
                     const greeting = isAndrew 
                         ? "Hey bro, what's up?" 
-                        : "Hello, I'm calling on behalf of Andrew. How can I help you?";
+                        : "Hello, I'm calling on behalf of Andrew. How can I help you today?";
                     
                     ws.send(JSON.stringify({
                         response_type: 'response',
@@ -221,8 +225,6 @@ wss.on('connection', (ws, req) => {
                     console.log(`🎯 ${type} | response_id: ${data.response_id}`);
                     
                     const cd3 = activeCalls.get(callId);
-                    
-                    // Try multiple sources for transcript
                     let transcript = data.transcript;
                     if (!transcript || transcript.length === 0) {
                         console.log('⚠️ No transcript in event, using stored');
