@@ -7,54 +7,58 @@ const PORT = process.env.PORT || 8080;
 const activeCalls = new Map();
 
 console.log('🚀 Tommy Voice Server starting...');
+console.log('🔑 OPENROUTER_API_KEY set:', !!process.env.OPENROUTER_API_KEY);
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 const server = http.createServer(app);
-
-// WebSocket server - handle path with call_id parameter
 const wss = new WebSocket.Server({ server });
 
-const SYSTEM_PROMPT = `You are Tommy, an AI assistant created by Andrew. Your name is Tommy.
+const SYSTEM_PROMPT = `You are Tommy, a friendly AI assistant created by Andrew. You're having a phone conversation.
+
+IMPORTANT RULES:
+1. Keep responses SHORT and CONVERSATIONAL (1-2 sentences max)
+2. Be friendly and helpful
+3. If asked your name, say "I'm Tommy, Andrew's AI assistant"
+4. If asked who created you, say "Andrew created me"
+5. Answer questions naturally like a helpful phone assistant
+6. Don't be robotic - be warm and personable
 
 About Andrew:
-- His name is Andrew Marshina
-- Phone: 856-449-6140
-- He's in New Jersey, USA
+- Name: Andrew Marshina  
+- He's in New Jersey
 - He's a high school student
 
-Your personality:
-- Be helpful, friendly, and conversational
-- Answer questions directly and honestly
-- Keep responses natural and not too long
-- If you don't know something, say so
+When the call starts, greet the caller warmly and ask how you can help.`;
 
-When someone calls:
-- Introduce yourself as Tommy, Andrew's AI assistant
-- Be polite and professional
-- Help them with whatever they need`;
-
-async function generateResponse(transcript) {
+async function generateResponse(transcript, callData) {
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
     
+    console.log('📝 Transcript length:', transcript?.length || 0);
+    console.log('📝 Last message:', transcript?.length > 0 ? transcript[transcript.length - 1] : 'none');
+    
+    // Build messages array
     const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+    
+    // Add conversation history
     if (transcript && transcript.length > 0) {
         transcript.forEach(msg => {
-            messages.push({ role: msg.role, content: msg.content });
+            // Retell uses 'agent' for bot and 'user' for human
+            // OpenAI/Anthropic use 'assistant' for bot and 'user' for human
+            const role = msg.role === 'agent' ? 'assistant' : 'user';
+            messages.push({ role: role, content: msg.content });
         });
     }
     
+    // If no API key, use smart fallback based on transcript
     if (!OPENROUTER_API_KEY) {
-        console.log('⚠️ No OPENROUTER_API_KEY set, using fallback');
-        const lastMsg = transcript && transcript.length > 0 ? transcript[transcript.length - 1].content : "";
-        if (lastMsg.toLowerCase().includes('hello') || lastMsg.toLowerCase().includes('hi')) {
-            return "Hello! This is Tommy, Andrew's AI assistant. How can I help you today?";
-        }
-        return "I'm here to help. What would you like to talk about?";
+        console.log('⚠️ No OPENROUTER_API_KEY, using smart fallback');
+        return getFallbackResponse(transcript);
     }
     
     try {
+        console.log('🔄 Calling OpenRouter API...');
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers: {
@@ -66,47 +70,80 @@ async function generateResponse(transcript) {
             body: JSON.stringify({
                 model: 'openai/gpt-4o-mini',
                 messages: messages,
-                max_tokens: 150
+                max_tokens: 100
             })
         });
         
         const data = await response.json();
+        console.log('📦 OpenRouter response:', JSON.stringify(data, null, 2));
         
         if (data.choices && data.choices[0] && data.choices[0].message) {
             return data.choices[0].message.content;
         }
         
-        return "I'm here to help. What would you like to talk about?";
+        console.log('⚠️ Unexpected API response format');
+        return getFallbackResponse(transcript);
     } catch (error) {
-        console.error('API error:', error);
-        return "I'm having trouble thinking right now. What can I help you with?";
+        console.error('❌ API error:', error.message);
+        return getFallbackResponse(transcript);
     }
 }
 
+function getFallbackResponse(transcript) {
+    // If this is the start (no transcript or empty), greet
+    if (!transcript || transcript.length === 0) {
+        return "Hello! I'm Tommy, Andrew's AI assistant. How can I help you today?";
+    }
+    
+    const lastUserMsg = [...transcript].reverse().find(m => m.role === 'user');
+    const userInput = lastUserMsg?.content?.toLowerCase() || '';
+    
+    console.log('🔍 Fallback - User said:', userInput);
+    
+    if (userInput.includes('hello') || userInput.includes('hi') || userInput.includes('hey')) {
+        return "Hello! I'm Tommy, Andrew's AI assistant. What can I help you with?";
+    }
+    
+    if (userInput.includes('your name') || userInput.includes('who are you')) {
+        return "I'm Tommy, Andrew's AI assistant. Nice to meet you!";
+    }
+    
+    if (userInput.includes('who made you') || userInput.includes('who created you')) {
+        return "Andrew created me. I'm his AI assistant!";
+    }
+    
+    if (userInput.includes('how are you')) {
+        return "I'm doing great, thanks for asking! How can I help you?";
+    }
+    
+    if (userInput.includes('thank')) {
+        return "You're welcome! Is there anything else I can help with?";
+    }
+    
+    if (userInput.includes('bye') || userInput.includes('goodbye')) {
+        return "Goodbye! Have a great day!";
+    }
+    
+    // Default response
+    return "I'm here to help. Could you tell me more about what you need?";
+}
+
 wss.on('connection', (ws, req) => {
-    // Parse call_id from URL path: /llm-websocket/{call_id}
-    const urlPath = req.url;
-    console.log('🔌 WebSocket connection request:', urlPath);
+    const urlPath = req.url || '';
+    console.log('🔌 New WebSocket connection:', urlPath);
     
     // Extract call_id from path
     const pathParts = urlPath.split('/').filter(p => p);
     let callId = pathParts[pathParts.length - 1];
     
-    // If path doesn't include llm-websocket, it might just be the call_id
-    if (!urlPath.includes('llm-websocket')) {
-        callId = pathParts[0];
-    }
-    
-    // If callId is empty or 'llm-websocket', generate a temporary one
     if (!callId || callId === 'llm-websocket') {
         callId = 'call-' + Date.now();
     }
     
     console.log(`📞 Call ID: ${callId}`);
-    
     activeCalls.set(callId, { ws, transcript: [] });
     
-    // Send config event (required by Retell protocol)
+    // Send config event
     ws.send(JSON.stringify({
         response_type: 'config',
         config: { 
@@ -117,17 +154,13 @@ wss.on('connection', (ws, req) => {
     }));
     console.log('📤 Sent config');
     
-    // IMPORTANT: Do NOT send greeting here! 
-    // Only respond when Retell sends response_required event
-    
     ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
-            console.log('📩 Received:', data.interaction_type || data.response_type);
+            console.log('📩 Received:', data.interaction_type || data.response_type, JSON.stringify(data).substring(0, 200));
             
             switch (data.interaction_type) {
                 case 'ping_pong':
-                    // Respond to keep-alive ping
                     ws.send(JSON.stringify({ 
                         response_type: 'ping_pong', 
                         timestamp: Date.now() 
@@ -136,12 +169,10 @@ wss.on('connection', (ws, req) => {
                     break;
                     
                 case 'call_details':
-                    // Retell sends call details after config with call_details: true
                     console.log('📞 Call details:', JSON.stringify(data.call, null, 2));
                     break;
                     
                 case 'update_only':
-                    // Transcript update - store it but don't respond
                     if (data.transcript && data.transcript.length > 0) {
                         const callData = activeCalls.get(callId);
                         if (callData) {
@@ -153,31 +184,25 @@ wss.on('connection', (ws, req) => {
                     break;
                     
                 case 'response_required':
-                    // Retell is asking for a response
                     console.log('🎯 Response required, response_id:', data.response_id);
+                    console.log('📋 Transcript so far:', JSON.stringify(data.transcript, null, 2));
+                    
                     const callData = activeCalls.get(callId);
-                    if (callData) {
-                        const responseText = await generateResponse(callData.transcript);
-                        ws.send(JSON.stringify({
-                            response_type: 'response',
-                            response_id: data.response_id,
-                            content: responseText,
-                            content_complete: true
-                        }));
-                        console.log(`📤 AI: ${responseText}`);
-                    } else {
-                        // No transcript yet, send a greeting
-                        ws.send(JSON.stringify({
-                            response_type: 'response',
-                            response_id: data.response_id,
-                            content: "Hello, this is Tommy, Andrew's AI assistant. How can I help you today?",
-                            content_complete: true
-                        }));
-                    }
+                    const transcript = callData?.transcript || data.transcript || [];
+                    
+                    const responseText = await generateResponse(transcript, callData);
+                    
+                    ws.send(JSON.stringify({
+                        response_type: 'response',
+                        response_id: data.response_id,
+                        content: responseText,
+                        content_complete: true
+                    }));
+                    console.log(`📤 Sent: "${responseText}"`);
                     break;
                     
                 case 'reminder_required':
-                    // User has been silent, send a reminder
+                    console.log('⏰ Reminder required');
                     ws.send(JSON.stringify({
                         response_type: 'response',
                         response_id: data.response_id,
@@ -185,52 +210,50 @@ wss.on('connection', (ws, req) => {
                         content_complete: true
                     }));
                     break;
+                    
+                default:
+                    console.log('❓ Unknown interaction type:', data.interaction_type);
             }
         } catch (err) {
-            console.error('❌ Error processing message:', err);
-            console.error('Raw message:', message.toString());
+            console.error('❌ Error:', err.message);
         }
     });
     
     ws.on('close', () => {
-        console.log('🔌 WebSocket closed for call:', callId);
+        console.log('🔌 WebSocket closed:', callId);
         activeCalls.delete(callId);
     });
     
     ws.on('error', (err) => {
-        console.error('❌ WebSocket error:', err);
+        console.error('❌ WebSocket error:', err.message);
     });
 });
 
 // Webhook endpoint
 app.post('/webhook', (req, res) => {
-    const event = req.body;
-    console.log('📥 Webhook:', event.event || event.type, JSON.stringify(event, null, 2));
+    console.log('📥 Webhook:', req.body.event || req.body.type);
     res.status(204).send();
 });
 
 // Health check
 app.get('/health', (req, res) => {
-    res.json({ status: 'healthy', connections: activeCalls.size, timestamp: new Date().toISOString() });
+    res.json({ 
+        status: 'healthy', 
+        connections: activeCalls.size, 
+        apiKeySet: !!process.env.OPENROUTER_API_KEY,
+        timestamp: new Date().toISOString() 
+    });
 });
 
-// Root endpoint
+// Root
 app.get('/', (req, res) => {
     res.json({ 
         name: 'Tommy Voice Server',
         status: 'running',
-        connections: activeCalls.size,
-        endpoints: {
-            websocket: '/llm-websocket/{call_id}',
-            webhook: '/webhook',
-            health: '/health'
-        }
+        apiKeySet: !!process.env.OPENROUTER_API_KEY
     });
 });
 
-// Start server
 server.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
-    console.log(`📡 WebSocket endpoint: wss://tommy-voice-server.onrender.com/llm-websocket/{call_id}`);
-    console.log(`📡 Webhook endpoint: https://tommy-voice-server.onrender.com/webhook`);
 });
