@@ -18,9 +18,9 @@ const wss = new WebSocket.Server({ server });
 // Tommy's personality - different modes based on who's calling
 function getSystemPrompt(callerNumber) {
     // Andrew's phone number - be casual and friendly
-    const andrewNumber = '18564496140'; // +1 (856) 449-6140
+    const andrewNumber = '18564496140';
     
-    if (callerNumber && callerNumber.includes('8564496140')) {
+    if (callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'))) {
         // Andrew is calling - be yourself, Tommy
         return `You are Tommy, a friendly AI assistant. You're talking to Andrew on the phone.
 
@@ -62,31 +62,42 @@ async function generateResponse(transcript, callerNumber) {
     const systemPrompt = getSystemPrompt(callerNumber);
     
     console.log('📝 Transcript length:', transcript?.length || 0);
-    if (transcript?.length > 0) {
-        const lastMsg = transcript[transcript.length - 1];
-        console.log('📝 Last message:', lastMsg.role, ':', lastMsg.content?.substring(0, 100));
-    }
+    console.log('📝 Full transcript:', JSON.stringify(transcript, null, 2));
     console.log('📞 Caller number:', callerNumber || 'unknown');
     
     // Build messages array
     const messages = [{ role: "system", content: systemPrompt }];
     
-    // Add conversation history
+    // Add conversation history - Retell uses 'agent' for bot, 'user' for human
     if (transcript && transcript.length > 0) {
         transcript.forEach(msg => {
             const role = msg.role === 'agent' ? 'assistant' : 'user';
-            messages.push({ role: role, content: msg.content });
+            const content = msg.content || msg.text || '';
+            if (content) {
+                messages.push({ role: role, content: content });
+                console.log(`💬 ${role}: ${content.substring(0, 50)}...`);
+            }
         });
     }
     
-    // Smart fallback if no API key
-    if (!OPENROUTER_API_KEY) {
-        console.log('⚠️ No OPENROUTER_API_KEY, using smart fallback');
-        return getFallbackResponse(transcript, callerNumber);
+    // Smart fallback if no API key or no transcript
+    if (!OPENROUTER_API_KEY || !transcript || transcript.length === 0) {
+        console.log('⚠️ Using fallback - no API key or empty transcript');
+        return getGreeting(callerNumber);
+    }
+    
+    // Get the last user message for context
+    const lastUserMsg = [...transcript].reverse().find(m => m.role === 'user');
+    const userInput = lastUserMsg?.content?.toLowerCase() || '';
+    
+    // If user just said hello/hi, use a greeting
+    if (userInput.includes('hello') || userInput.includes('hi') || userInput.includes('hey')) {
+        const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
+        return isAndrew ? "Hey bro! What's up?" : "Hello! How can I help you today?";
     }
     
     try {
-        console.log('🔄 Calling OpenRouter API with model: anthropic/claude-3.5-sonnet');
+        console.log('🔄 Calling OpenRouter API with model: openai/gpt-4o-mini');
         
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
@@ -97,23 +108,23 @@ async function generateResponse(transcript, callerNumber) {
                 'X-Title': 'Tommy Voice Server'
             },
             body: JSON.stringify({
-                model: 'anthropic/claude-3.5-sonnet',
+                model: 'openai/gpt-4o-mini',
                 messages: messages,
-                max_tokens: 150
+                max_tokens: 100
             })
         });
         
         const data = await response.json();
+        console.log('📦 OpenRouter raw response:', JSON.stringify(data, null, 2));
         
         if (data.error) {
             console.error('❌ API error:', data.error);
-            // Fallback to cheaper model
-            return await tryCheaperModel(messages, transcript, callerNumber);
+            return getFallbackResponse(transcript, callerNumber);
         }
         
         if (data.choices && data.choices[0] && data.choices[0].message) {
             const reply = data.choices[0].message.content;
-            console.log('📤 AI response:', reply.substring(0, 100));
+            console.log('✅ AI response:', reply);
             return reply;
         }
         
@@ -125,48 +136,16 @@ async function generateResponse(transcript, callerNumber) {
     }
 }
 
-async function tryCheaperModel(messages, transcript, callerNumber) {
-    try {
-        console.log('🔄 Trying cheaper model: openai/gpt-4o-mini');
-        
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-                'Content-Type': 'application/json',
-                'HTTP-Referer': 'https://tommy-voice-server.onrender.com',
-                'X-Title': 'Tommy Voice Server'
-            },
-            body: JSON.stringify({
-                model: 'openai/gpt-4o-mini',
-                messages: messages,
-                max_tokens: 150
-            })
-        });
-        
-        const data = await response.json();
-        
-        if (data.choices && data.choices[0] && data.choices[0].message) {
-            return data.choices[0].message.content;
-        }
-        
-        return getFallbackResponse(transcript, callerNumber);
-    } catch (error) {
-        console.error('❌ Fallback model also failed:', error.message);
-        return getFallbackResponse(transcript, callerNumber);
-    }
+function getGreeting(callerNumber) {
+    const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
+    return isAndrew ? "Hey bro, what's up? How can I help?" : "Hello, this is Tommy calling on behalf of Andrew. How can I help you?";
 }
 
 function getFallbackResponse(transcript, callerNumber) {
-    const andrewNumber = '18564496140';
-    const isAndrew = callerNumber && callerNumber.includes('8564496140');
+    const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
     
-    // If this is the start (no transcript), greet appropriately
     if (!transcript || transcript.length === 0) {
-        if (isAndrew) {
-            return "Hey! What's up bro? What can I help you with?";
-        }
-        return "Hello, this is Tommy calling on behalf of Andrew. How can I help you today?";
+        return getGreeting(callerNumber);
     }
     
     const lastUserMsg = [...transcript].reverse().find(m => m.role === 'user');
@@ -176,39 +155,17 @@ function getFallbackResponse(transcript, callerNumber) {
     
     if (isAndrew) {
         // Casual responses for Andrew
-        if (userInput.includes('hello') || userInput.includes('hi') || userInput.includes('hey')) {
-            return "Hey bro! What's going on?";
-        }
-        if (userInput.includes('your name') || userInput.includes('who are you')) {
-            return "I'm Tommy, bro. You created me, remember?";
-        }
-        if (userInput.includes('how are you')) {
-            return "I'm doing good, just here to help you out. What do you need?";
-        }
-        if (userInput.includes('thank')) {
-            return "No problem bro, anytime.";
-        }
-        if (userInput.includes('bye') || userInput.includes('goodbye')) {
-            return "Later bro, catch you later!";
-        }
-        // Default for Andrew - be helpful and casual
+        if (userInput.includes('name')) return "I'm Tommy, bro. You know that!";
+        if (userInput.includes('how are you')) return "I'm doing good! What do you need?";
+        if (userInput.includes('thank')) return "No problem bro, anytime.";
+        if (userInput.includes('bye')) return "Later bro!";
         return "Yeah, I got you. What else you need?";
     } else {
         // Professional responses for others
-        if (userInput.includes('hello') || userInput.includes('hi')) {
-            return "Hello, I'm calling on behalf of Andrew. How can I help you today?";
-        }
-        if (userInput.includes('who is this') || userInput.includes('who\'s calling')) {
-            return "This is Tommy, I'm calling on behalf of Andrew.";
-        }
-        if (userInput.includes('thank')) {
-            return "You're welcome. Have a great day.";
-        }
-        if (userInput.includes('bye') || userInput.includes('goodbye')) {
-            return "Goodbye, thank you for your time.";
-        }
-        // Default for others - stay on task
-        return "Is there anything else I can help you with regarding this call?";
+        if (userInput.includes('who') && userInput.includes('calling')) return "This is Tommy calling on behalf of Andrew.";
+        if (userInput.includes('thank')) return "You're welcome. Have a great day.";
+        if (userInput.includes('bye')) return "Goodbye, thank you for your time.";
+        return "Is there anything else I can help you with?";
     }
 }
 
@@ -256,28 +213,33 @@ wss.on('connection', (ws, req) => {
                     // Store caller number for context
                     const callData = activeCalls.get(callId);
                     if (callData && data.call) {
-                        callData.callerNumber = data.call.from_number || data.call.caller_number;
+                        // Try multiple fields for caller number
+                        callData.callerNumber = data.call.from_number || data.call.caller_number || data.call.from || data.call.phone;
                         console.log('📞 Caller number stored:', callData.callerNumber);
                     }
                     break;
                     
                 case 'update_only':
+                    console.log('📝 Update only - transcript:', JSON.stringify(data.transcript, null, 2));
                     if (data.transcript && data.transcript.length > 0) {
                         const cd = activeCalls.get(callId);
                         if (cd) {
                             cd.transcript = data.transcript;
+                            console.log('📝 Updated transcript, length:', cd.transcript.length);
                         }
-                        const latest = data.transcript[data.transcript.length - 1];
-                        console.log(`🗣️ ${latest.role}: ${latest.content}`);
                     }
                     break;
                     
                 case 'response_required':
                     console.log('🎯 Response required, response_id:', data.response_id);
+                    console.log('🎯 Full event:', JSON.stringify(data, null, 2));
                     
                     const cd = activeCalls.get(callId);
-                    const transcript = cd?.transcript || data.transcript || [];
-                    const callerNumber = cd?.callerNumber || null;
+                    // Use transcript from the event itself, not stored
+                    const transcript = data.transcript || cd?.transcript || [];
+                    const callerNumber = cd?.callerNumber || data.call?.from_number || null;
+                    
+                    console.log('🎯 Using transcript from event, length:', transcript.length);
                     
                     const responseText = await generateResponse(transcript, callerNumber);
                     
@@ -287,12 +249,12 @@ wss.on('connection', (ws, req) => {
                         content: responseText,
                         content_complete: true
                     }));
-                    console.log(`📤 Sent: "${responseText.substring(0, 100)}..."`);
+                    console.log(`📤 Sent: "${responseText}"`);
                     break;
                     
                 case 'reminder_required':
                     const cd2 = activeCalls.get(callId);
-                    const isAndrew = cd2?.callerNumber?.includes('8564496140');
+                    const isAndrew = cd2?.callerNumber?.includes('8564496140') || cd2?.callerNumber?.includes('564496140');
                     
                     ws.send(JSON.stringify({
                         response_type: 'response',
@@ -303,10 +265,11 @@ wss.on('connection', (ws, req) => {
                     break;
                     
                 default:
-                    console.log('❓ Unknown interaction type:', data.interaction_type);
+                    console.log('❓ Unknown type:', data.interaction_type, JSON.stringify(data, null, 2));
             }
         } catch (err) {
             console.error('❌ Error:', err.message);
+            console.error('❌ Stack:', err.stack);
         }
     });
     
@@ -323,7 +286,7 @@ wss.on('connection', (ws, req) => {
 // Webhook endpoint
 app.post('/webhook', (req, res) => {
     console.log('📥 Webhook:', req.body.event || req.body.type);
-    console.log('📥 Webhook body:', JSON.stringify(req.body, null, 2));
+    console.log('📥 Body:', JSON.stringify(req.body, null, 2));
     res.status(204).send();
 });
 
@@ -342,8 +305,7 @@ app.get('/', (req, res) => {
     res.json({ 
         name: 'Tommy Voice Server',
         status: 'running',
-        apiKeySet: !!process.env.OPENROUTER_API_KEY,
-        model: 'anthropic/claude-3.5-sonnet (with fallback)'
+        apiKeySet: !!process.env.OPENROUTER_API_KEY
     });
 });
 
