@@ -2,28 +2,18 @@ const express = require('express');
 const cors = require('cors');
 const WebSocket = require('ws');
 const http = require('http');
-const localtunnel = require('localtunnel');
-const { spawn } = require('child_process');
 
 const PORT = process.env.PORT || 8080;
-
-// Store active calls
 const activeCalls = new Map();
 
 console.log('🚀 Tommy Voice Server starting...');
-console.log('📡 Using Ollama for AI responses');
 
-// Create HTTP server
 const app = express();
 app.use(cors());
 app.use(express.json());
-
 const server = http.createServer(app);
-
-// WebSocket server for Retell LLM
 const wss = new WebSocket.Server({ server, path: '/llm-websocket' });
 
-// System prompt for Tommy
 const SYSTEM_PROMPT = `You are Tommy, an AI assistant created by Andrew. Your name is Tommy.
 
 About Andrew:
@@ -45,55 +35,54 @@ When someone calls:
 
 IMPORTANT: When calling businesses (restaurants, etc.), follow Andrew's instructions. If he didn't give specific instructions, just make small talk and say Andrew will call back.`;
 
-// Generate response using Ollama
-function generateResponseWithOllama(transcript) {
-    return new Promise((resolve) => {
-        let conversationHistory = "";
-        if (transcript && transcript.length > 0) {
-            transcript.forEach(msg => {
-                conversationHistory += `${msg.role}: ${msg.content}\n`;
-            });
+async function generateResponse(transcript) {
+    const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+    
+    const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+    if (transcript && transcript.length > 0) {
+        transcript.forEach(msg => {
+            messages.push({ role: msg.role, content: msg.content });
+        });
+    }
+    
+    if (!OPENROUTER_API_KEY) {
+        console.log('⚠️ No OPENROUTER_API_KEY set, using fallback');
+        const lastMsg = transcript && transcript.length > 0 ? transcript[transcript.length - 1].content : "";
+        if (lastMsg.toLowerCase().includes('hello') || lastMsg.toLowerCase().includes('hi')) {
+            return "Hello! This is Tommy, Andrew's AI assistant. How can I help you today?";
+        }
+        return "I'm here to help. What would you like to talk about?";
+    }
+    
+    try {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'https://tommy-voice-server.onrender.com',
+                'X-Title': 'Tommy Voice Server'
+            },
+            body: JSON.stringify({
+                model: 'openai/gpt-4o-mini',
+                messages: messages,
+                max_tokens: 150
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+            return data.choices[0].message.content;
         }
         
-        const prompt = `${SYSTEM_PROMPT}
-
-Conversation so far:
-${conversationHistory}
-
-User just said something. As Tommy, what would you respond? Keep it brief (1-2 sentences max).`;
-
-        const ollama = spawn('powershell', [
-            '-Command',
-            `Invoke-RestMethod -Uri 'http://localhost:11434/api/generate' -Method Post -ContentType 'application/json' -Body (@{model='qwen2.5:14b'; prompt='${prompt.replace(/'/g, "''")}'; stream=` + '$false} | ConvertTo-Json) -TimeoutSec 30 | Select-Object -ExpandProperty response`
-        ]);
-
-        let response = "";
-        
-        ollama.stdout.on('data', (data) => {
-            response += data.toString();
-        });
-        
-        ollama.on('close', (code) => {
-            if (response && response.trim()) {
-                resolve(response.trim());
-            } else {
-                resolve("I'm here to help. What would you like to talk about?");
-            }
-        });
-        
-        ollama.on('error', (err) => {
-            console.error('Ollama error:', err);
-            resolve("I'm having trouble thinking right now. What can I help you with?");
-        });
-        
-        setTimeout(() => {
-            ollama.kill();
-            resolve("I'm still here. What would you like to talk about?");
-        }, 30000);
-    });
+        return "I'm here to help. What would you like to talk about?";
+    } catch (error) {
+        console.error('API error:', error);
+        return "I'm having trouble thinking right now. What can I help you with?";
+    }
 }
 
-// WebSocket handler
 wss.on('connection', (ws, req) => {
     console.log('🔌 New WebSocket connection from Retell');
     
@@ -142,7 +131,7 @@ wss.on('connection', (ws, req) => {
                     console.log('🎯 Generating AI response...');
                     const callData = activeCalls.get(callId);
                     if (callData) {
-                        const responseText = await generateResponseWithOllama(callData.transcript);
+                        const responseText = await generateResponse(callData.transcript);
                         ws.send(JSON.stringify({
                             response_type: 'response',
                             response_id: data.response_id,
@@ -185,21 +174,22 @@ app.get('/health', (req, res) => {
     res.json({ status: 'healthy', connections: activeCalls.size, timestamp: new Date().toISOString() });
 });
 
+// Root endpoint
+app.get('/', (req, res) => {
+    res.json({ 
+        name: 'Tommy Voice Server',
+        status: 'running',
+        endpoints: {
+            websocket: '/llm-websocket',
+            webhook: '/webhook',
+            health: '/health'
+        }
+    });
+});
+
 // Start server
-server.listen(PORT, async () => {
+server.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
-    
-    try {
-        const tunnel = await localtunnel({ port: PORT });
-        console.log(`\n🌐 URLs:`);
-        console.log(`   Webhook: ${tunnel.url}/webhook`);
-        console.log(`   WebSocket: ${tunnel.url.replace('http:', 'ws:').replace('https:', 'wss:')}/llm-websocket`);
-        
-        tunnel.on('close', () => {
-            console.log('Tunnel closed - restarting...');
-            process.exit(1);
-        });
-    } catch (err) {
-        console.error('Tunnel error:', err);
-    }
+    console.log(`📡 WebSocket endpoint: wss://tommy-voice-server.onrender.com/llm-websocket`);
+    console.log(`📡 Webhook endpoint: https://tommy-voice-server.onrender.com/webhook`);
 });
