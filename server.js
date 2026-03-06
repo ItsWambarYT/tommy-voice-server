@@ -7,7 +7,7 @@ const PORT = process.env.PORT || 8080;
 const activeCalls = new Map();
 
 console.log('🚀 Tommy Voice Server starting...');
-console.log('🔑 OPENROUTER_API_KEY:', !!process.env.OPENROUTER_API_KEY);
+console.log('🔑 OPENROUTER_API_KEY set:', !!process.env.OPENROUTER_API_KEY);
 
 const app = express();
 app.use(cors());
@@ -31,8 +31,9 @@ RULES:
 - Be helpful, honest, and fun
 - Don't say "Andrew's AI assistant" - just be Tommy
 - If you don't know something, say so honestly
+- Respond directly to what Andrew says - don't just repeat generic responses
 
-IMPORTANT: Respond directly to what Andrew says. Be helpful and conversational.`;
+IMPORTANT: You are having a real conversation. Listen and respond naturally.`;
 
 // Tommy's personality when calling others
 const BUSINESS_SYSTEM_PROMPT = `You are Tommy, making a phone call on behalf of Andrew.
@@ -44,9 +45,6 @@ CONTEXT:
 - Say "I'm calling on behalf of Andrew" if asked who you are
 - Only share necessary information
 - Keep responses VERY short - this is a phone call`;
-
-// First greeting when Andrew calls
-const BEGIN_MESSAGE = "Hey bro, what's up? How can I help?";
 
 function getSystemPrompt(callerNumber) {
     const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
@@ -62,7 +60,7 @@ function convertTranscript(transcript) {
     }));
 }
 
-// Generate AI response using OpenRouter
+// Generate AI response using OpenRouter with timeout
 async function generateResponse(transcript, callerNumber) {
     const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
     
@@ -79,11 +77,16 @@ async function generateResponse(transcript, callerNumber) {
         return getFallback(transcript, callerNumber);
     }
     
+    // Create timeout promise (8 seconds max)
+    const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('API timeout after 8s')), 8000);
+    });
+    
     try {
-        console.log('🤖 Calling OpenRouter API...');
+        console.log('🤖 Calling OpenRouter API (gpt-4o-mini)...');
         const startTime = Date.now();
         
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        const fetchPromise = fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
@@ -99,8 +102,11 @@ async function generateResponse(transcript, callerNumber) {
             })
         });
         
+        const response = await Promise.race([fetchPromise, timeoutPromise]);
         const data = await response.json();
         const elapsed = Date.now() - startTime;
+        
+        console.log('📦 OpenRouter response:', JSON.stringify(data, null, 2));
         
         if (data.error) {
             console.error('❌ API ERROR:', data.error);
@@ -113,7 +119,7 @@ async function generateResponse(transcript, callerNumber) {
             return reply;
         }
         
-        console.error('❌ UNEXPECTED:', JSON.stringify(data));
+        console.error('❌ UNEXPECTED FORMAT:', JSON.stringify(data));
         return getFallback(transcript, callerNumber);
         
     } catch (error) {
@@ -129,12 +135,15 @@ function getFallback(transcript, callerNumber) {
         : null;
     const input = lastUserMsg?.content?.toLowerCase() || '';
     
+    console.log('🔄 Using fallback - isAndrew:', isAndrew, 'input:', input);
+    
     if (isAndrew) {
         if (input.includes('name')) return "I'm Tommy, bro!";
-        if (input.includes('how')) return "I'm doing good! What do you need?";
+        if (input.includes('how')) return "I'm doing good! What about you?";
         if (input.includes('thank')) return "No problem bro!";
         if (input.match(/^(bye|later|see ya)/)) return "Later bro!";
-        return "Yeah bro, I'm here. What's up?";
+        if (input.includes('hello') || input.includes('hi') || input.includes('hey')) return "Hey bro! What's going on?";
+        return "Yeah bro, I'm here. What do you need?";
     }
     
     // Business mode
@@ -151,10 +160,14 @@ wss.on('connection', (ws, req) => {
     console.log('🔌 NEW CONNECTION:', callId);
     activeCalls.set(callId, { ws, transcript: [], callerNumber: null });
     
-    // Send config
+    // Send config immediately
     ws.send(JSON.stringify({
         response_type: 'config',
-        config: { auto_reconnect: true, call_details: true }
+        config: { 
+            auto_reconnect: true, 
+            call_details: true,
+            transcript_with_tool_calls: false
+        }
     }));
     console.log('📤 Sent config');
     
@@ -162,39 +175,41 @@ wss.on('connection', (ws, req) => {
         try {
             const data = JSON.parse(message);
             const type = data.interaction_type || data.response_type;
-            console.log('📩', type);
+            console.log('📩', type, JSON.stringify(data).substring(0, 200));
             
             switch (type) {
                 case 'ping_pong':
+                    // CRITICAL: Echo back the exact timestamp from Retell
                     ws.send(JSON.stringify({ 
                         response_type: 'ping_pong', 
-                        timestamp: data.timestamp || Date.now() 
+                        timestamp: data.timestamp  // Echo back, not Date.now()
                     }));
+                    console.log('📤 ping_pong echo');
                     break;
                     
                 case 'call_details':
-                    // Store caller info
+                    // Store caller info and send greeting
                     const cd = activeCalls.get(callId);
                     if (cd && data.call) {
                         cd.callerNumber = data.call.from_number || data.call.caller_number || data.call.from;
                         console.log('📞 Caller:', cd.callerNumber);
-                        
-                        // Send initial greeting
-                        const isAndrew = cd.callerNumber && (
-                            cd.callerNumber.includes('8564496140') || cd.callerNumber.includes('564496140')
-                        );
-                        const greeting = isAndrew 
-                            ? BEGIN_MESSAGE 
-                            : "Hello, I'm calling on behalf of Andrew. How can I help you today?";
-                        
-                        ws.send(JSON.stringify({
-                            response_type: 'response',
-                            response_id: 0,
-                            content: greeting,
-                            content_complete: true
-                        }));
-                        console.log('📤 Sent greeting:', greeting);
                     }
+                    
+                    // Send greeting to start conversation
+                    const isAndrew = cd?.callerNumber && (
+                        cd.callerNumber.includes('8564496140') || cd.callerNumber.includes('564496140')
+                    );
+                    const greeting = isAndrew 
+                        ? "Hey bro, what's up?" 
+                        : "Hello, I'm calling on behalf of Andrew. How can I help you today?";
+                    
+                    ws.send(JSON.stringify({
+                        response_type: 'response',
+                        response_id: 0,  // Begin message uses response_id: 0
+                        content: greeting,
+                        content_complete: true
+                    }));
+                    console.log('📤 Sent greeting:', greeting);
                     break;
                     
                 case 'update_only':
@@ -206,35 +221,34 @@ wss.on('connection', (ws, req) => {
                             console.log('📝 Updated transcript:', data.transcript.length, 'messages');
                         }
                     }
+                    // No response needed for update_only
                     break;
                     
                 case 'response_required':
                 case 'reminder_required':
-                    console.log('🎯', type, 'response_id:', data.response_id);
+                    console.log('🎯', type, '| response_id:', data.response_id);
                     
                     const cd3 = activeCalls.get(callId);
+                    // Use transcript from the event itself (most up-to-date)
                     const transcript = data.transcript || cd3?.transcript || [];
                     const callerNumber = cd3?.callerNumber;
                     
-                    // For reminder, add context
-                    if (type === 'reminder_required') {
-                        // Add implicit user silence
-                        transcript.push({ 
-                            role: 'user', 
-                            content: '(silence - waiting for response)' 
-                        });
-                    }
+                    console.log('📝 Using transcript with', transcript.length, 'messages');
                     
                     const reply = await generateResponse(transcript, callerNumber);
                     
+                    // CRITICAL: Echo back the exact response_id
                     ws.send(JSON.stringify({
                         response_type: 'response',
-                        response_id: data.response_id,
+                        response_id: data.response_id,  // Must match what Retell sent
                         content: reply,
                         content_complete: true
                     }));
-                    console.log('📤 Sent:', reply);
+                    console.log('📤 Sent (response_id=' + data.response_id + '):', reply);
                     break;
+                    
+                default:
+                    console.log('❓ Unknown type:', type);
             }
         } catch (err) {
             console.error('❌ ERROR:', err.message);
