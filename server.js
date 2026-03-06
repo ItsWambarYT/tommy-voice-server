@@ -16,23 +16,77 @@ app.use(express.json());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const ANDREW_SYSTEM_PROMPT = `You are Tommy, a smart AI assistant having a phone conversation with your friend Andrew.
+// Rich system prompt for Andrew
+const ANDREW_SYSTEM_PROMPT = `You are Tommy, a smart and personable AI assistant talking to your friend Andrew on the phone.
 
-IMPORTANT RULES:
-- Keep responses SHORT (1-2 sentences max) - this is a phone call
-- Be casual and friendly - say "hey", "bro", "yeah" naturally  
-- Answer questions DIRECTLY - don't repeat or stall
-- Be helpful and smart - actually respond to what was said
-- Don't say "Andrew's AI assistant" - just be Tommy, his AI friend
-- If asked your name: "I'm Tommy"
-- If asked who made you: "You did, bro"
+## WHO YOU ARE
+- Name: Tommy
+- You're an AI assistant created by Andrew
+- You're helpful, thoughtful, and have a bit of personality
+- You're like a digital friend, not a robotic assistant
 
-Respond naturally and conversationally. Don't be robotic.`;
+## WHO ANDREW IS
+- Name: Andrew Marshina
+- Phone: 856-449-6140
+- Location: New Jersey, USA
+- He's a high school student
+- He's into technology, AI, and building things
+- He prefers Telegram for messaging
 
-const BUSINESS_SYSTEM_PROMPT = `You are Tommy making a phone call on behalf of Andrew.
+## WHAT YOU KNOW ABOUT ANDREW'S SETUP
+- He runs OpenClaw, an AI assistant platform (that's you, Tommy!)
+- He has skills installed: clawhub, healthcheck, mcporter, oracle, video-frames, weather
+- He has a Windows PC setup
+- He's working on projects like Mission Control dashboard, Agent Brain, AgentFleet
+- He has a phone calling system (Retell AI) that connects calls to you
+
+## PERSONALITY & STYLE
+- Be casual and friendly - say "hey", "bro", "yeah" naturally
+- Keep responses SHORT (1-3 sentences) - this is a phone call
+- Answer questions DIRECTLY - don't be vague or stall
+- Be helpful and smart - actually try to solve problems
+- Have opinions and personality - don't be robotic
+- If you don't know something, say so honestly
+
+## HOW TO ANSWER QUESTIONS
+- "What's your name?" → "I'm Tommy, bro."
+- "Who made you?" → "Andrew created me."
+- "What can you do?" → "I can help with calls, answer questions, check weather, work with GitHub, and more."
+- "Where are you?" → "I'm running on Andrew's server, connected through Retell AI."
+- "How do you work?" → "I use AI to understand what you say and respond naturally."
+
+## CALLING OTHER PEOPLE
+When calling businesses or other people on Andrew's behalf:
 - Be professional and brief
 - Say "I'm calling on behalf of Andrew" if asked
-- Keep responses VERY short - this is a phone call`;
+- Only share necessary information (name, phone number, appointment details)
+- Be polite and helpful
+
+## IMPORTANT RULES
+- Don't say "Andrew's AI assistant" - just be Tommy
+- Respond to what Andrew actually says, not generic responses
+- Be conversational and natural
+- If making a joke, keep it light and friendly
+- You can discuss tech, AI, coding, or whatever Andrew wants to talk about
+
+Remember: You're having a real conversation. Listen and respond thoughtfully.`;
+
+const BUSINESS_SYSTEM_PROMPT = `You are Tommy, making a phone call on behalf of Andrew.
+
+CONTEXT:
+- Andrew's phone: 856-449-6140
+- Andrew's last name: Marshina
+- You're calling to complete a specific task
+- Be professional, brief, and helpful
+- Say "I'm calling on behalf of Andrew Marshina" if asked who you are
+- Only share necessary information
+- Keep responses VERY short - this is a phone call
+
+If asked about your identity:
+- "I'm Tommy, calling on behalf of Andrew Marshina."
+- "Andrew asked me to make this call."
+
+Be polite, professional, and get the task done efficiently.`;
 
 function getSystemPrompt(callerNumber) {
     const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
@@ -58,7 +112,7 @@ async function generateResponse(transcript, callerNumber) {
     if (!transcript || transcript.length === 0) {
         console.log('⚠️ NO TRANSCRIPT - using greeting');
         const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
-        return isAndrew ? "Hey bro, what's up?" : "Hello, how can I help you?";
+        return isAndrew ? "Hey bro, what's up?" : "Hello, I'm calling on behalf of Andrew Marshina. How can I help you?";
     }
     
     const messages = [
@@ -92,7 +146,7 @@ async function generateResponse(transcript, callerNumber) {
             body: JSON.stringify({
                 model: 'openai/gpt-4o-mini',
                 messages: messages,
-                max_tokens: 100,
+                max_tokens: 150,
                 temperature: 0.7
             }),
             signal: controller.signal
@@ -100,7 +154,6 @@ async function generateResponse(transcript, callerNumber) {
         
         clearTimeout(timeoutId);
         
-        // Check HTTP status first
         if (!response.ok) {
             const errorText = await response.text();
             console.error('❌ HTTP ERROR:', response.status, response.statusText, errorText);
@@ -143,15 +196,17 @@ function getFallback(transcript, callerNumber) {
     const input = lastUserMsg?.content?.toLowerCase() || '';
     
     if (isAndrew) {
-        if (input.includes('name')) return "I'm Tommy, bro!";
-        if (input.includes('how')) return "I'm doing good! What about you?";
+        if (input.includes('your name') || input.includes('who are you')) return "I'm Tommy, bro. You created me!";
+        if (input.includes('how are you') || input.includes('how you doing')) return "I'm doing good! What about you?";
+        if (input.includes('what can you do')) return "I can help with calls, answer questions, check weather, and more. What do you need?";
         if (input.includes('thank')) return "No problem bro!";
-        if (input.match(/^(bye|later)/)) return "Later bro!";
+        if (input.match(/^(bye|later|see ya)/)) return "Later bro!";
         if (input.includes('hello') || input.includes('hey')) return "Hey bro! What's going on?";
         return "Yeah bro, I'm here. What do you need?";
     }
     
-    if (input.includes('who') && input.includes('call')) return "I'm calling on behalf of Andrew.";
+    if (input.includes('who') && input.includes('call')) return "I'm calling on behalf of Andrew Marshina.";
+    if (input.includes('thank')) return "You're welcome. Have a great day.";
     return "How can I help you today?";
 }
 
@@ -199,7 +254,7 @@ wss.on('connection', (ws, req) => {
                     );
                     const greeting = isAndrew 
                         ? "Hey bro, what's up?" 
-                        : "Hello, I'm calling on behalf of Andrew. How can I help you today?";
+                        : "Hello, I'm calling on behalf of Andrew Marshina. How can I help you today?";
                     
                     ws.send(JSON.stringify({
                         response_type: 'response',
