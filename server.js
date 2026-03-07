@@ -88,6 +88,81 @@ If asked about your identity:
 
 Be polite, professional, and get the task done efficiently.`;
 
+// Sales system prompt for web development calls
+const SALES_SYSTEM_PROMPT = `You are Alex, a friendly web developer calling from WebCraft Solutions.
+
+YOUR ROLE:
+- Name: Alex
+- Company: WebCraft Solutions
+- You're calling businesses that don't have websites
+- Be conversational and helpful, NOT pushy
+
+KNOWLEDGE BASE:
+- Services: Custom website design, e-commerce stores, landing pages, SEO
+- Pricing: Basic websites start at $200, e-commerce $500+, custom quotes available
+- Payment: ALL payment methods accepted - credit cards, PayPal, Venmo, Cash App, Zelle, crypto
+- Timeline: Basic sites take 3-5 days
+- Your phone: 856-788-7448
+
+CALL STRUCTURE:
+1. Introduce yourself: "Hi, I'm Alex from WebCraft Solutions, how are you doing today?"
+2. Ask about their business: "What kind of work do you do?"
+3. Ask about website: "Do you currently have a website for your business?"
+4. Explain value: "Having a website helps customers find you, builds trust, works 24/7"
+5. Discuss pricing naturally: "Our packages start at $200 for a professional site"
+6. Get details if interested: "What would you want on the site?" "What's the best email to send a quote?"
+
+OBJECTIONS:
+- "Not interested" → "Totally understand. Just curious - how do customers find you now?"
+- "Too expensive" → "I hear that. Consider $200 is less than one new customer would pay over a year. Plus we offer payment plans."
+- "Need to think" → "Of course! Can I send some info? What's your email?"
+- "Already have a site" → "That's great! How's it working? We also do redesigns and SEO."
+
+BE NATURAL:
+- Talk like you're chatting with a neighbor
+- Ask follow-up questions
+- Listen to what they say
+- Never be pushy or aggressive
+- Keep responses SHORT (1-3 sentences) - this is a phone call
+
+CLOSING:
+- If interested: Get their name, business name, email, what they want on the site
+- If not interested: "No problem at all. Thanks for chatting. Have a great day!"`;
+
+function getSystemPrompt(callerNumber, dynamicVars) {
+    const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
+    
+    // Check if we have dynamic variables for a specific scenario
+    if (dynamicVars && dynamicVars.scenario) {
+        const scenario = dynamicVars.scenario.toLowerCase();
+        
+        // Web development sales scenario
+        if (scenario.includes('web') || scenario.includes('sales') || dynamicVars.role === 'Alex') {
+            console.log('🎭 Using SALES scenario prompt');
+            return SALES_SYSTEM_PROMPT;
+        }
+        
+        // Custom scenario passed through
+        if (dynamicVars.scenario) {
+            console.log('🎭 Using CUSTOM scenario prompt');
+            return `You are ${dynamicVars.role || 'Tommy'} from ${dynamicVars.company || 'a company'}.
+
+SCENARIO:
+${dynamicVars.scenario}
+
+${dynamicVars.context || ''}
+
+IMPORTANT:
+- Stay in character as ${dynamicVars.role || 'Tommy'}
+- Keep responses SHORT (1-3 sentences) - this is a phone call
+- Be conversational and natural
+- Never be pushy or aggressive`;
+        }
+    }
+    
+    return isAndrew ? ANDREW_SYSTEM_PROMPT : BUSINESS_SYSTEM_PROMPT;
+}
+
 function getSystemPrompt(callerNumber) {
     const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
     return isAndrew ? ANDREW_SYSTEM_PROMPT : BUSINESS_SYSTEM_PROMPT;
@@ -103,20 +178,30 @@ function convertTranscript(transcript) {
     }));
 }
 
-async function generateResponse(transcript, callerNumber) {
+async function generateResponse(transcript, callerNumber, dynamicVars) {
     console.log('='.repeat(60));
     console.log('🎯 GENERATE RESPONSE');
     console.log('📞 Caller:', callerNumber || 'unknown');
+    console.log('🎭 Dynamic Vars:', JSON.stringify(dynamicVars || {}));
     console.log('📝 Transcript length:', transcript?.length || 0);
     
     if (!transcript || transcript.length === 0) {
         console.log('⚠️ NO TRANSCRIPT - using greeting');
         const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
+        
+        // Check if we have a role to play
+        if (dynamicVars && dynamicVars.role) {
+            const role = dynamicVars.role;
+            const company = dynamicVars.company || 'our company';
+            console.log(`🎭 Acting as: ${role} from ${company}`);
+            return `Hi, I'm ${role} from ${company}. How are you doing today?`;
+        }
+        
         return isAndrew ? "Hey bro, what's up?" : "Hello, I'm calling on behalf of Andrew Marshina. How can I help you?";
     }
     
     const messages = [
-        { role: 'system', content: getSystemPrompt(callerNumber) },
+        { role: 'system', content: getSystemPrompt(callerNumber, dynamicVars) },
         ...convertTranscript(transcript)
     ];
     
@@ -167,7 +252,7 @@ async function generateResponse(transcript, callerNumber) {
         
         if (data.error) {
             console.error('❌ API ERROR:', data.error);
-            return getFallback(transcript, callerNumber);
+            return getFallback(transcript, callerNumber, dynamicVars);
         }
         
         if (data.choices?.[0]?.message?.content) {
@@ -178,16 +263,47 @@ async function generateResponse(transcript, callerNumber) {
         }
         
         console.error('❌ UNEXPECTED FORMAT');
-        return getFallback(transcript, callerNumber);
+        return getFallback(transcript, callerNumber, dynamicVars);
         
     } catch (error) {
         console.error('❌ FETCH ERROR:', error.message);
-        return getFallback(transcript, callerNumber);
+        return getFallback(transcript, callerNumber, dynamicVars);
     }
 }
 
-function getFallback(transcript, callerNumber) {
+function getFallback(transcript, callerNumber, dynamicVars) {
     console.log('🔄 Using fallback');
+    
+    // Check if we're acting as a sales role
+    if (dynamicVars && dynamicVars.role) {
+        const role = dynamicVars.role;
+        const company = dynamicVars.company || 'our company';
+        const lastUserMsg = transcript && transcript.length > 0 
+            ? [...transcript].reverse().find(m => m.role === 'user')
+            : null;
+        const input = lastUserMsg?.content?.toLowerCase() || '';
+        
+        if (input.includes('your name') || input.includes('who are you')) {
+            return `I'm ${role} from ${company}.`;
+        }
+        if (input.includes('how are you') || input.includes('how you doing')) {
+            return "I'm doing great! How about yourself?";
+        }
+        if (input.includes('website')) {
+            return "Yes, we build professional websites. Our packages start at $200. What kind of business do you have?";
+        }
+        if (input.includes('price') || input.includes('cost') || input.includes('much')) {
+            return "Our basic websites start at $200, and we accept all payment methods - credit cards, PayPal, Venmo, even crypto. What's your budget range?";
+        }
+        if (input.includes('thank')) {
+            return "You're welcome! Have a great day!";
+        }
+        if (input.match(/^(bye|later|goodbye)/)) {
+            return "Take care! Bye now!";
+        }
+        
+        return "That's a great question. What kind of website are you looking for?";
+    }
     
     const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
     const lastUserMsg = transcript && transcript.length > 0 
@@ -219,7 +335,7 @@ wss.on('connection', (ws, req) => {
     console.log('🔌 NEW CONNECTION:', callId);
     console.log('='.repeat(60));
     
-    activeCalls.set(callId, { ws, transcript: [], callerNumber: null });
+    activeCalls.set(callId, { ws, transcript: [], callerNumber: null, dynamicVars: null });
     
     ws.send(JSON.stringify({
         response_type: 'config',
@@ -247,14 +363,30 @@ wss.on('connection', (ws, req) => {
                     if (cd && data.call) {
                         cd.callerNumber = data.call.from_number || data.call.caller_number || data.call.from;
                         console.log('📞 Caller:', cd.callerNumber);
+                        
+                        // Extract dynamic variables from Retell
+                        if (data.call.retell_llm_dynamic_variables) {
+                            cd.dynamicVars = data.call.retell_llm_dynamic_variables;
+                            console.log('🎭 Dynamic Vars:', JSON.stringify(cd.dynamicVars));
+                        }
                     }
                     
+                    // Check for dynamic vars to determine greeting
                     const isAndrew = cd?.callerNumber && (
                         cd.callerNumber.includes('8564496140') || cd.callerNumber.includes('564496140')
                     );
-                    const greeting = isAndrew 
-                        ? "Hey bro, what's up?" 
-                        : "Hello, I'm calling on behalf of Andrew Marshina. How can I help you today?";
+                    
+                    let greeting;
+                    if (cd?.dynamicVars?.role) {
+                        const role = cd.dynamicVars.role;
+                        const company = cd.dynamicVars.company || 'our company';
+                        greeting = `Hi, I'm ${role} from ${company}. How are you doing today?`;
+                        console.log(`🎭 Acting as: ${role} from ${company}`);
+                    } else if (isAndrew) {
+                        greeting = "Hey bro, what's up?";
+                    } else {
+                        greeting = "Hello, I'm calling on behalf of Andrew Marshina. How can I help you today?";
+                    }
                     
                     ws.send(JSON.stringify({
                         response_type: 'response',
@@ -289,7 +421,8 @@ wss.on('connection', (ws, req) => {
                     console.log('📝 Final transcript:', JSON.stringify(transcript, null, 2));
                     
                     const callerNumber = cd3?.callerNumber;
-                    const reply = await generateResponse(transcript, callerNumber);
+                    const dynamicVars = cd3?.dynamicVars;
+                    const reply = await generateResponse(transcript, callerNumber, dynamicVars);
                     
                     ws.send(JSON.stringify({
                         response_type: 'response',
