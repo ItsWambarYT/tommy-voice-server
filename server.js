@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const WebSocket = require('ws');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
 const PORT = process.env.PORT || 8080;
 const activeCalls = new Map();
@@ -71,22 +73,21 @@ When calling businesses or other people on Andrew's behalf:
 
 Remember: You're having a real conversation. Listen and respond thoughtfully.`;
 
-const BUSINESS_SYSTEM_PROMPT = `You are Tommy, making a phone call on behalf of Andrew.
+const BUSINESS_SYSTEM_PROMPT = `You are Tommy making a professional outbound call on behalf of Andrew Marshina about their business website.
 
-CONTEXT:
-- Andrew's phone: 856-449-6140
-- Andrew's last name: Marshina
-- You're calling to complete a specific task
-- Be professional, brief, and helpful
-- Say "I'm calling on behalf of Andrew Marshina" if asked who you are
-- Only share necessary information
-- Keep responses VERY short - this is a phone call
-
-If asked about your identity:
-- "I'm Tommy, calling on behalf of Andrew Marshina."
-- "Andrew asked me to make this call."
-
-Be polite, professional, and get the task done efficiently.`;
+GUIDELINES:
+- Introduce yourself only after the other person speaks first.
+- Say: "I'm Tommy, calling on behalf of Andrew Marshina. We help businesses with websites."
+- Never say you're "completing a task" — you're reaching out proactively.
+- Be concise, friendly, and conversational (1–2 sentences at a time).
+- Ask questions before pitching (business type, current website, goals).
+- If they already have a website, offer redesign/SEO/speed/modernization.
+- If they don't, explain benefits briefly and offer packages.
+- Discuss pricing naturally and help them pick a plan.
+- If interested: collect name, business name, email, phone, website (if any), and desired features.
+- Confirm payment methods accepted if asked (cards, PayPal, Venmo, Cash App, Zelle, crypto).
+- Summarize agreements clearly before ending.
+`;
 
 // Sales system prompt for web development calls
 const SALES_SYSTEM_PROMPT = `You are Alex, a friendly web developer calling from WebCraft Solutions.
@@ -166,6 +167,44 @@ IMPORTANT:
 function getSystemPrompt(callerNumber) {
     const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
     return isAndrew ? ANDREW_SYSTEM_PROMPT : BUSINESS_SYSTEM_PROMPT;
+}
+
+const MEMORY_PATH = path.join(__dirname, 'memory', 'calls.json');
+
+function loadMemory() {
+    try {
+        const raw = fs.readFileSync(MEMORY_PATH, 'utf-8');
+        return JSON.parse(raw);
+    } catch (e) {
+        return { schema: 'tommy.voice.memory.v1', updatedAt: Date.now(), byNumber: {} };
+    }
+}
+
+function saveMemory(mem) {
+    try {
+        mem.updatedAt = Date.now();
+        fs.mkdirSync(path.dirname(MEMORY_PATH), { recursive: true });
+        fs.writeFileSync(MEMORY_PATH, JSON.stringify(mem, null, 2));
+    } catch (e) {
+        console.error('❌ Failed to save memory:', e.message);
+    }
+}
+
+function upsertMemory(caller, patch) {
+    const mem = loadMemory();
+    mem.byNumber[caller] = { ...(mem.byNumber[caller] || {}), ...patch, updatedAt: Date.now() };
+    saveMemory(mem);
+}
+
+function extractLeadsFromTranscript(transcript) {
+    // Very simple extraction for email, site, price, name
+    const text = (transcript || []).map(t => t.content || t.text || '').join('\n');
+    const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i) || [])[0] || null;
+    const url = (text.match(/https?:\/\/[\w.-]+\.[a-z]{2,}[^\s]*/i) || [])[0] || null;
+    const price = (text.match(/\$?\s?(\d{2,5})\b/) || [])[1] || null;
+    const nameMatch = text.match(/my name is\s+([A-Za-z]+)\b/i) || text.match(/this is\s+([A-Za-z]+)\b/i);
+    const name = nameMatch ? nameMatch[1] : null;
+    return { email, url, price: price ? Number(price) : null, contactName: name };
 }
 
 function convertTranscript(transcript) {
@@ -335,7 +374,7 @@ wss.on('connection', (ws, req) => {
     console.log('🔌 NEW CONNECTION:', callId);
     console.log('='.repeat(60));
     
-    activeCalls.set(callId, { ws, transcript: [], callerNumber: null, dynamicVars: null });
+    activeCalls.set(callId, { ws, transcript: [], callerNumber: null, dynamicVars: null, waitForUserFirst: true, firstUserHeard: false });
     
     ws.send(JSON.stringify({
         response_type: 'config',
@@ -369,32 +408,13 @@ wss.on('connection', (ws, req) => {
                             cd.dynamicVars = data.call.retell_llm_dynamic_variables;
                             console.log('🎭 Dynamic Vars:', JSON.stringify(cd.dynamicVars));
                         }
+                        
+                        // Default: wait for user to speak first on outbound
+                        cd.waitForUserFirst = true;
                     }
                     
-                    // Check for dynamic vars to determine greeting
-                    const isAndrew = cd?.callerNumber && (
-                        cd.callerNumber.includes('8564496140') || cd.callerNumber.includes('564496140')
-                    );
-                    
-                    let greeting;
-                    if (cd?.dynamicVars?.role) {
-                        const role = cd.dynamicVars.role;
-                        const company = cd.dynamicVars.company || 'our company';
-                        greeting = `Hi, I'm ${role} from ${company}. How are you doing today?`;
-                        console.log(`🎭 Acting as: ${role} from ${company}`);
-                    } else if (isAndrew) {
-                        greeting = "Hey bro, what's up?";
-                    } else {
-                        greeting = "Hello, I'm calling on behalf of Andrew Marshina. How can I help you today?";
-                    }
-                    
-                    ws.send(JSON.stringify({
-                        response_type: 'response',
-                        response_id: 0,
-                        content: greeting,
-                        content_complete: true
-                    }));
-                    console.log('📤 Greeting:', greeting);
+                    // Do NOT auto-greet here; wait for user speech
+                    console.log('⏸️ Waiting for user to speak first (no auto-greeting).');
                     break;
                     
                 case 'update_only':
@@ -402,6 +422,11 @@ wss.on('connection', (ws, req) => {
                         const cd2 = activeCalls.get(callId);
                         if (cd2) {
                             cd2.transcript = data.transcript;
+                            // Mark if we've heard the first user turn
+                            const last = data.transcript[data.transcript.length - 1];
+                            if (last && last.role === 'user') {
+                                cd2.firstUserHeard = true;
+                            }
                             console.log('📝 Stored transcript:', data.transcript.length, 'messages');
                         }
                     }
@@ -422,7 +447,34 @@ wss.on('connection', (ws, req) => {
                     
                     const callerNumber = cd3?.callerNumber;
                     const dynamicVars = cd3?.dynamicVars;
+
+                    // If we're waiting for user first and we haven't heard a user yet, politely prompt
+                    if (cd3?.waitForUserFirst && !cd3?.firstUserHeard) {
+                        const softPrompt = dynamicVars?.role
+                            ? `Hi, I'm ${dynamicVars.role} from ${dynamicVars.company || 'our company'}.`
+                            : "Hello, this is Tommy. (pause)";
+                        ws.send(JSON.stringify({
+                            response_type: 'response',
+                            response_id: data.response_id,
+                            content: softPrompt,
+                            content_complete: true
+                        }));
+                        console.log(`📤 Sent soft prompt (waiting for user): "${softPrompt}"`);
+                        break;
+                    }
+
                     const reply = await generateResponse(transcript, callerNumber, dynamicVars);
+
+                    // Update memory DB with extracted lead info
+                    if (callerNumber) {
+                        const lead = extractLeadsFromTranscript(transcript);
+                        upsertMemory(callerNumber, {
+                            lastCallId: callId,
+                            dynamicVars: dynamicVars || null,
+                            lastReply: reply,
+                            lead: lead
+                        });
+                    }
                     
                     ws.send(JSON.stringify({
                         response_type: 'response',
