@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 8080;
 const activeCalls = new Map();
 
 const API_KEY = process.env.OPENROUTER_API_KEY;
+const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || null;
 console.log('🚀 Tommy Voice Server starting...');
 console.log('🔑 OPENROUTER_API_KEY:', API_KEY ? `set (${API_KEY.substring(0, 10)}...)` : 'NOT SET');
 
@@ -470,12 +471,37 @@ wss.on('connection', (ws, req) => {
                     // Update memory DB with extracted lead info
                     if (callerNumber) {
                         const lead = extractLeadsFromTranscript(transcript);
-                        upsertMemory(callerNumber, {
+                        const record = {
                             lastCallId: callId,
                             dynamicVars: dynamicVars || null,
                             lastReply: reply,
                             lead: lead
-                        });
+                        };
+                        upsertMemory(callerNumber, record);
+
+                        // Auto-trigger n8n when we have minimally useful data
+                        if (N8N_WEBHOOK_URL && (lead.email || lead.contactName)) {
+                            const payload = {
+                                source: 'tommy-voice-server',
+                                callerNumber,
+                                callId,
+                                role: dynamicVars?.role || 'Tommy',
+                                company: dynamicVars?.company || null,
+                                scenario: dynamicVars?.scenario || null,
+                                lead,
+                                transcript
+                            };
+                            try {
+                                fetch(N8N_WEBHOOK_URL, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(payload)
+                                }).then(r => console.log('📮 n8n webhook status:', r.status))
+                                  .catch(e => console.error('❌ n8n webhook error:', e.message));
+                            } catch (e) {
+                                console.error('❌ n8n webhook exception:', e.message);
+                            }
+                        }
                     }
                     
                     ws.send(JSON.stringify({
