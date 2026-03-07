@@ -117,7 +117,8 @@ CALL STRUCTURE:
 3. Ask if they currently have a website; if yes, what they'd like improved (design, speed, SEO, mobile, bookings, ecommerce)
 4. If no site: briefly explain benefits and share the tier options above
 5. Discuss pricing naturally: recommend a tier that fits needs and budget
-6. If interested: collect name, business name, email, phone, current website (if any), desired features; summarize next steps and timeline
+6. Ask their preferred hosting/deployment: Render, Vercel, Linode, or Netlify (offer a recommendation if unsure)
+7. If interested: collect name, business name, email, phone, current website (if any), desired features; summarize next steps and timeline
 
 OBJECTIONS:
 - "Not interested" → "Totally understand. How do customers find you now?"
@@ -131,7 +132,7 @@ STYLE:
 - Confirm payment methods if asked (we accept everything)
 
 CLOSING:
-- Confirm agreed tier/price, features, and timeline. Thank them and promise a follow‑up email with details.`;
+- Confirm agreed tier/price, features, hosting preference, and timeline. Thank them and promise a follow‑up email with details.`;
 
 function getSystemPrompt(callerNumber, dynamicVars) {
     const isAndrew = callerNumber && (callerNumber.includes('8564496140') || callerNumber.includes('564496140'));
@@ -200,14 +201,16 @@ function upsertMemory(caller, patch) {
 }
 
 function extractLeadsFromTranscript(transcript) {
-    // Very simple extraction for email, site, price, name
+    // Simple extraction for email, site, price, name, and hosting preference
     const text = (transcript || []).map(t => t.content || t.text || '').join('\n');
     const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i) || [])[0] || null;
     const url = (text.match(/https?:\/\/[\w.-]+\.[a-z]{2,}[^\s]*/i) || [])[0] || null;
-    const price = (text.match(/\$?\s?(\d{2,5})\b/) || [])[1] || null;
+    const price = (text.match(/\$?\s?(200|400|800|1200|1500)\b/i) || [])[1] || (text.match(/\$?\s?(\d{2,5})\b/) || [])[1] || null;
     const nameMatch = text.match(/my name is\s+([A-Za-z]+)\b/i) || text.match(/this is\s+([A-Za-z]+)\b/i);
     const name = nameMatch ? nameMatch[1] : null;
-    return { email, url, price: price ? Number(price) : null, contactName: name };
+    const hostingMatch = text.match(/\b(render|vercel|linode|netlify|aws|gcp|google cloud|azure)\b/i);
+    const hosting = hostingMatch ? hostingMatch[1].toLowerCase() : null;
+    return { email, url, price: price ? Number(price) : null, contactName: name, hosting };
 }
 
 function convertTranscript(transcript) {
